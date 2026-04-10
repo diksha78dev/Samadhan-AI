@@ -28,5 +28,28 @@ Rural communities face barriers in accessing essential services due to low digit
 
 ### Backend (Spring Boot)
 ```bash
-cd backend
-./mvnw spring-boot:run   # or mvnw.cmd on Windows
+cd samadhan-ai
+./mvnw spring-boot:run
+```
+
+### Frontend (React)
+```bash
+cd samadhan-frontend
+npm install
+npm run dev
+```
+
+### Database (MySQL)
+1. Create a MySQL database named `samadhan_db`.
+2. Update `src/main/resources/application.properties` with your MySQL credentials.
+
+Example configuration:
+
+```properties
+spring.datasource.url=jdbc:mysql://localhost:3306/samadhan_db?createDatabaseIfNotExist=true&useSSL=false&allowPublicKeyRetrieval=true
+spring.datasource.username=root
+spring.datasource.password=your_mysql_password_here
+spring.jpa.hibernate.ddl-auto=update
+```
+
+You can copy `src/main/resources/application.properties.example` and fill in your values.
