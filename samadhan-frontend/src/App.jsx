@@ -1,7 +1,48 @@
 import { useState } from 'react';
+import { openDB } from 'idb';
 import VoiceInput from './components/VoiceInput';
 
 const API_URL = 'http://localhost:8080/api/chat/ask';
+const CACHE_DB_NAME = 'samadhan-offline-db';
+
+// Function to save response to IndexedDB
+const saveToOfflineCache = async (query, response, domain, language) => {
+  try {
+    const db = await openDB(CACHE_DB_NAME, 1, {
+      upgrade(db) {
+        if (!db.objectStoreNames.contains('responses')) {
+          db.createObjectStore('responses', { keyPath: 'id', autoIncrement: true });
+        }
+      },
+    });
+    const tx = db.transaction('responses', 'readwrite');
+    const store = tx.objectStore('responses');
+    await store.add({ query, response, domain, language, timestamp: Date.now() });
+    await tx.done;
+    console.log('Saved to offline cache');
+  } catch (error) {
+    console.log('Offline cache save failed:', error);
+  }
+};
+
+// Function to get cached response
+const getFromOfflineCache = async (query, domain, language) => {
+  try {
+    const db = await openDB(CACHE_DB_NAME, 1);
+    const tx = db.transaction('responses', 'readonly');
+    const store = tx.objectStore('responses');
+    const allItems = await store.getAll();
+    
+    // Find exact match
+    const match = allItems.find(item => 
+      item.query === query && item.domain === domain && item.language === language
+    );
+    return match ? match.response : null;
+  } catch (error) {
+    console.log('Offline cache read failed:', error);
+    return null;
+  }
+};
 
 function App() {
   const [query, setQuery] = useState('');
@@ -10,12 +51,47 @@ function App() {
   const [domain, setDomain] = useState('agriculture');
   const [language, setLanguage] = useState('hi');
   const [isListening, setIsListening] = useState(false);
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
+
+  // Monitor online/offline status
+  useState(() => {
+    window.addEventListener('online', () => setIsOnline(true));
+    window.addEventListener('offline', () => setIsOnline(false));
+    return () => {
+      window.removeEventListener('online', () => setIsOnline(true));
+      window.removeEventListener('offline', () => setIsOnline(false));
+    };
+  }, []);
 
   const handleVoiceResult = async (text) => {
     setQuery(text);
     setLoading(true);
     
     try {
+      // First, check offline cache
+      const cachedResponse = await getFromOfflineCache(text, domain, language);
+      
+      if (cachedResponse) {
+        console.log('Using cached response (offline mode)');
+        setResponse(cachedResponse);
+        // Speak the cached response
+        const utterance = new SpeechSynthesisUtterance(cachedResponse);
+        if (language === 'hi') utterance.lang = 'hi-IN';
+        else if (language === 'mr') utterance.lang = 'mr-IN';
+        else utterance.lang = 'en-US';
+        window.speechSynthesis.speak(utterance);
+        setLoading(false);
+        return;
+      }
+      
+      // If not in cache, check if online
+      if (!isOnline) {
+        setResponse('No internet connection and no cached response found. Please connect to internet for new queries.');
+        setLoading(false);
+        return;
+      }
+      
+      // Online mode: call backend API
       const res = await fetch(API_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -24,6 +100,9 @@ function App() {
       
       const data = await res.json();
       setResponse(data.response);
+      
+      // Save to offline cache for future use
+      await saveToOfflineCache(text, data.response, domain, language);
       
       // Text to speech
       const utterance = new SpeechSynthesisUtterance(data.response);
@@ -34,7 +113,14 @@ function App() {
       window.speechSynthesis.speak(utterance);
       
     } catch (error) {
-      setResponse('Cannot connect to server. Please make sure Spring Boot is running on port 8080');
+      console.error('API error:', error);
+      // Try cache again on error
+      const cachedResponse = await getFromOfflineCache(text, domain, language);
+      if (cachedResponse) {
+        setResponse(cachedResponse + ' (from offline cache)');
+      } else {
+        setResponse('Cannot connect to server. Please check if backend is running, or use cached queries.');
+      }
     }
     setLoading(false);
   };
@@ -44,6 +130,24 @@ function App() {
     setLoading(true);
     
     try {
+      // Check cache first
+      const cachedResponse = await getFromOfflineCache(query, domain, language);
+      if (cachedResponse) {
+        setResponse(cachedResponse);
+        const utterance = new SpeechSynthesisUtterance(cachedResponse);
+        if (language === 'hi') utterance.lang = 'hi-IN';
+        else if (language === 'mr') utterance.lang = 'mr-IN';
+        window.speechSynthesis.speak(utterance);
+        setLoading(false);
+        return;
+      }
+      
+      if (!isOnline) {
+        setResponse('No internet connection. Please connect to internet for new queries.');
+        setLoading(false);
+        return;
+      }
+      
       const res = await fetch(API_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -52,6 +156,7 @@ function App() {
       
       const data = await res.json();
       setResponse(data.response);
+      await saveToOfflineCache(query, data.response, domain, language);
       
       const utterance = new SpeechSynthesisUtterance(data.response);
       if (language === 'hi') utterance.lang = 'hi-IN';
@@ -59,7 +164,12 @@ function App() {
       window.speechSynthesis.speak(utterance);
       
     } catch (error) {
-      setResponse('Server error. Please try again.');
+      const cachedResponse = await getFromOfflineCache(query, domain, language);
+      if (cachedResponse) {
+        setResponse(cachedResponse + ' (from offline cache)');
+      } else {
+        setResponse('Server error. Please try again.');
+      }
     }
     setLoading(false);
   };
@@ -73,6 +183,10 @@ function App() {
             Samadhan with AI
           </h1>
           <p className="text-gray-600">Voice-first assistant for rural India</p>
+          {/* Online/Offline Indicator */}
+          <div className={`inline-block mt-2 px-3 py-1 rounded-full text-xs font-medium ${isOnline ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
+            {isOnline ? '🟢 Online' : '🔴 Offline Mode'}
+          </div>
         </div>
 
         {/* Domain Selector */}
